@@ -6,11 +6,12 @@ package main
 // epic effects (particles) when a large portion of velocity was preserved when entering hook
 // investigate weird vibration if you just hang on the hook for a while
 // fix fucking NaN crashes when chilling on hook for too long
-// setup git
 // lock hook to center of tile
 // movement:
 //	-hook settings: snapping to nearest 30/45 deg? setting hook points with click and using with space or using in current pos with just mouse?
-//	-make colliding while inHook force hook exit (PROPERLY)
+// split functionality of move into move and checkCollision
+// is Move() return-instantly-on-collision bool flag parameter really necessary? couldn't it just basically be always true and not make a difference because of the special Move() loop structure?
+
 import (
 	"fmt"
 	"image/color"
@@ -53,7 +54,7 @@ const (
 type TileType uint32
 
 const (
-	EMPTY   	= TileType(0) // tileMap[i].tileType == 0 means no tile there
+	EMPTY           = TileType(0) // tileMap[i].tileType == 0 means no tile there
 	GROUND          = TileType(SOLID)
 	SPIKE           = TileType(SOLID | KILLS_ON_CONTACT)
 	TILE_WIDTH      = 6
@@ -74,7 +75,6 @@ type TileMap struct {
 	tileType [TILE_COUNT]TileType
 }
 
-// TODO: implement this
 func (g *Game) getTileImage(t TileType) *ebiten.Image {
 	switch t {
 	case EMPTY:
@@ -190,12 +190,75 @@ func (player *Player) Draw(screen *ebiten.Image) {
 	}
 }
 
-// returns the indexes of the tiles the entity collided with in this movement step
-// (there are two because it's possible to collide with two at once when at a corner)
-func (e *Entity) Move(x, y float64, tileMap *TileMap, stopCompletelyOnCollision bool) (indX, indY int) {
+// returns true iff moving the player by dx dy would move the player into level geometry
+// dx and dy must be in {-1,0, 1} and only one of them should be non-zero at a time
+
+// directions
+type Direction uint8
+
+const (
+	// TODO: remove all but one iota
+	UP Direction = 1 << iota
+	RIGHT
+	DOWN
+	LEFT
+	UPLEFT        = UP | LEFT
+	UPRIGHT       = UP | RIGHT
+	DOWNLEFT      = DOWN | LEFT
+	DOWNRIGHT     = DOWN | RIGHT
+	NIL_DIRECTION = Direction(0)
+)
+
+// should this also return which tile is being collided with???
+func (e *Entity) collidesAt(direction Direction, tileMap *TileMap) bool {
+	// inefficient but makes collision work no matter the
+	// relationship between tile and player hitbox sizes
+	switch direction {
+	case UP, DOWN:
+		nextY := e.y + e.height
+		if direction == UP {
+			nextY = e.y - 1
+		}
+		tileY := nextY / TILE_WIDTH
+		// check for out of bounds
+		if tileY >= TILE_MAP_HEIGHT || tileY < 0 {
+			return false // or true???? or panic??
+		}
+		for i := e.x; i < e.x+e.width; i++ {
+			tileX := i / TILE_WIDTH
+			if uint32(tileMap.tileType[TILE_MAP_WIDTH*tileY+tileX])&SOLID == SOLID { // colliding
+				return true
+			}
+		}
+	case LEFT, RIGHT:
+		nextX := e.x + e.width
+		if direction == LEFT {
+			nextX = e.x - 1
+		}
+		tileX := nextX / TILE_WIDTH
+		// check for out of bounds
+		if tileX >= TILE_MAP_WIDTH || tileX < 0 {
+			return false // or true???? or panic??
+		}
+		for i := e.y; i < e.y+e.height; i++ {
+			tileY := i / TILE_WIDTH
+			if uint32(tileMap.tileType[TILE_MAP_WIDTH*tileY+tileX])&SOLID == SOLID { // colliding
+				return true
+			}
+		}
+	default:
+		panic(fmt.Sprintf("CheckIfCollides() got passed invalid direction %v", direction))
+	}
+	return false
+}
+
+// returns the collision direction
+// (if there's a corner and two collisions happen in one Move() then it returns a compound direction)
+// (returns NIL_DIRECTION with no collision)
+func (e *Entity) Move(x, y float64, tileMap *TileMap, stopCompletelyOnCollision bool) Direction {
 	// calculate dx and dy, the integer distances to move the player by
-	indX = -1
-	indY = -1
+	// indX = -1
+	// indY = -1
 	e.remX += x
 	dx := int(e.remX)
 	e.remX = math.Mod(e.remX, 1)
@@ -218,63 +281,43 @@ func (e *Entity) Move(x, y float64, tileMap *TileMap, stopCompletelyOnCollision 
 	// the idea of the loop is to alternate the direction (X or Y) in which we're moving
 	// in a way which approximates the 'real' trajectory, so with dx=200 dy=100, we'd move
 	// 2 right, 1 down, 2 right, 1 down etc.
+	retDir := NIL_DIRECTION
 	for stepsX < absDX || stepsY < absDY {
 		if absDX == 0 || stepsX*absDY > absDX*stepsY && stepsY < absDY {
 			// check for collisions
-			nextY := e.y + e.height
+			dir := DOWN
 			if signY == -1 {
-				nextY = e.y - 1
+				dir = UP
 			}
-			// this is inefficient but makes collision work no matter the
-			// relationship between tile and player hitbox sizes
-			tileY := nextY / TILE_WIDTH
-			// check for out of bounds
-			if tileY >= TILE_MAP_HEIGHT || tileY < 0 {
-				return
-			}
-			for i := e.x; i < e.x+e.width; i++ {
-				tileX := i / TILE_WIDTH
-				if uint32(tileMap.tileType[TILE_MAP_WIDTH*tileY+tileX])&SOLID == SOLID { // colliding
-					indY = TILE_MAP_WIDTH*tileY + tileX
-					if stopCompletelyOnCollision {
-						return
-					}
-					stepsY = absDY
-					e.y -= signY // cancel out the last incremenet that follows the break
-					break
+			if e.collidesAt(dir, tileMap) {
+				if stopCompletelyOnCollision {
+					return dir
 				}
+				retDir |= dir
+				stepsY = absDY
+				e.y -= signY // cancel out the last incremenet that follows the break
 			}
 			e.y += signY
 			stepsY++
 		} else {
-			// check for collisions
-			nextX := e.x + e.width
+			dir := RIGHT
 			if signX == -1 {
-				nextX = e.x - 1
+				dir = LEFT
 			}
-			tileX := nextX / TILE_WIDTH
-			// check for out of bounds
-			if tileX >= TILE_MAP_WIDTH || tileX < 0 {
-				return
-			}
-			for i := e.y; i < e.y+e.height; i++ {
-				tileY := i / TILE_WIDTH
-				if uint32(tileMap.tileType[TILE_MAP_WIDTH*tileY+tileX])&SOLID == SOLID { // colliding
-					indX = TILE_MAP_WIDTH*tileY + tileX
-					if stopCompletelyOnCollision {
-						return
-					}
-					stepsX = absDX
-					e.x -= signX
-					break
+			if e.collidesAt(dir, tileMap) {
+				if stopCompletelyOnCollision {
+					return dir
 				}
+				retDir |= dir
+				stepsX = absDX
+				e.x -= signX
 			}
 			e.x += signX
 			stepsX++
 		}
 
 	}
-	return
+	return retDir
 }
 
 type Game struct {
@@ -332,15 +375,6 @@ func (g *Game) Update() error {
 			}
 			g.player.vx = math.Min(MAX_PLAYER_VX, g.player.vx+d)
 		}
-		// if ebiten.IsKeyPressed(ebiten.KeyW) {
-		// 	if g.player.grounded {
-		// 		g.player.grounded = false
-		// 		g.player.vy -= JUMP_INSTANT_ACCELL
-		// 	}
-		// } else {
-		// 	// slight jank
-		// 	g.player.framesSinceGrounded = JUMP_ACCELL_FRAME_COUNT + JUMP_ACCELL_FRAME_START + 1
-		// }
 		if inpututil.IsKeyJustPressed(ebiten.KeyW) {
 			g.player.framesSinceJumpAttempt = 0
 		} else {
@@ -355,7 +389,9 @@ func (g *Game) Update() error {
 		}
 
 		// gravity
-		g.player.vy += GRAV_ACCELL
+		if !g.player.grounded {
+			g.player.vy += GRAV_ACCELL
+		}
 		if g.player.framesSinceGrounded < (JUMP_ACCELL_FRAME_COUNT+JUMP_ACCELL_FRAME_START) && g.player.framesSinceGrounded >= JUMP_ACCELL_FRAME_START {
 			g.player.vy -= (TOTAL_EXTRA_JUMP_DELTA_VY / JUMP_ACCELL_FRAME_COUNT)
 			// fmt.Printf("applying extra dvx=%v on frame %v; at height %v\n", (totalExtraJumpDeltaVX / jumpAcellFrameCount), g.player.framesSinceGrounded, g.player.y)
@@ -428,29 +464,18 @@ func (g *Game) Update() error {
 			}
 		}
 
-		// move the player, checking for collisions
-		indX, indY := g.player.e.Move(g.player.vx, g.player.vy, g.tileMap, false)
-		{
-			if indX != -1 { // handle X direction collision
-				if uint32(g.tileMap.tileType[indX])&SOLID == SOLID {
-					g.player.inHook = false
-					g.player.vx = 0
-					g.player.e.remX = 0.0
-				}
+		{ // move the player, checking for collisions
+			dir := g.player.e.Move(g.player.vx, g.player.vy, g.tileMap, false)
+			if dir&LEFT == LEFT || dir&RIGHT == RIGHT { // handle X direction collision
+				g.player.inHook = false
+				g.player.vx = 0
+				g.player.e.remX = 0.0
 			}
-			if indY != -1 { // handle Y direction collision
-				if uint32(g.tileMap.tileType[indY])&SOLID == SOLID {
-					g.player.inHook = false
-					g.player.e.remY = 0
-					// hacky? Move() doesn't say whether the Y collision happened going up or down
-					// but here that follows from the sign of vy
-					if g.player.vy > 0 {
-						g.player.grounded = true
-					}
-					g.player.vy = 0
-					// to stop the jump when you bonk your head
-					g.player.framesSinceGrounded = JUMP_ACCELL_FRAME_COUNT + JUMP_ACCELL_FRAME_START + 1
-				}
+			if dir&UP == UP || dir&DOWN == DOWN { // handle Y direction collision
+				g.player.inHook = false
+				g.player.vy = 0
+				g.player.e.remY = 0
+				g.player.framesSinceGrounded = JUMP_ACCELL_FRAME_COUNT + JUMP_ACCELL_FRAME_START + 1
 			}
 		}
 
@@ -492,10 +517,16 @@ func (g *Game) Update() error {
 			g.b2 = playerCenterY - g.a2*playerCenterX
 		}
 
-		if g.player.grounded {
-			g.player.framesSinceGrounded = 0
-		} else {
-			g.player.framesSinceGrounded++
+		{ // check if player is grounded
+			if g.player.e.collidesAt(DOWN, g.tileMap) {
+				g.player.grounded = true
+				g.player.vy = 0.0
+				g.player.e.remY = 0.0
+				g.player.framesSinceGrounded = 0
+			} else {
+				g.player.grounded = false
+				g.player.framesSinceGrounded++
+			}
 		}
 
 		g.player.movingLeft = false
@@ -513,9 +544,9 @@ func (g *Game) Update() error {
 			dy := (y1 - playerCenterY)
 			collisionFinder := &Entity{x: int(math.Round(playerCenterX)), y: int(math.Round(playerCenterY)),
 				remX: 0.0, remY: 0.0, width: 1, height: 1}
-			_, indY := collisionFinder.Move(1000*dx, 1000*dy, g.tileMap, true)
+			dir := collisionFinder.Move(1000*dx, 1000*dy, g.tileMap, true)
 
-			if indY != -1 && dy < 0 {
+			if dir == UP {
 				g.circle.x = float64(collisionFinder.x)
 				// -1 to make it inside the ceiling and not just right under
 				g.circle.y = float64(collisionFinder.y - 1)
@@ -546,13 +577,13 @@ func (g *Game) Update() error {
 		placingBlock := false
 		selectedTileType := EMPTY
 		switch {
-		case ebiten.IsKeyPressed(ebiten.Key0):
+		case ebiten.IsKeyPressed(ebiten.Key1):
 			selectedTileType = EMPTY
 			placingBlock = true
-		case ebiten.IsKeyPressed(ebiten.Key1):
+		case ebiten.IsKeyPressed(ebiten.Key2):
 			selectedTileType = GROUND
 			placingBlock = true
-		case ebiten.IsKeyPressed(ebiten.Key2):
+		case ebiten.IsKeyPressed(ebiten.Key3):
 			selectedTileType = SPIKE
 			placingBlock = true
 		}
@@ -574,7 +605,9 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	g.tileMap.Draw(screen)
 	g.player.Draw(screen)
 
-	ebitenutil.DebugPrint(screen, fmt.Sprintf("%v\n%04v %04v\n %.4f %.4f", ebiten.CurrentFPS(), g.player.e.x, g.player.e.y, g.player.vx, g.player.vy))
+	ebitenutil.DebugPrint(screen, fmt.Sprintf("%v\n%04v %04v\n %.4f %.4f\n%v", ebiten.CurrentFPS(), g.player.e.x, g.player.e.y, g.player.vx, g.player.vy, g.player.grounded))
+	// fmt.Printf("   x: %04v,    y: %04v\n", g.player.e.x, g.player.e.y)
+	// fmt.Printf("remX: %.2f, remY: %.2f\n\n", g.player.e.remX, g.player.e.remY)
 
 	// g.drawLineEquation(g.a1, g.b1, screen)
 	// g.drawLineEquation(g.a2, g.b2, screen)
