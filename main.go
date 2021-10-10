@@ -50,38 +50,49 @@ const (
 )
 
 // currently: pixel grid is 480x270, tile grid is 80x45 (6 logical pixels per tile)
-type TileType uint8
+type TileType uint32
 
 const (
-	EMPTY TileType = iota // tileMap[i].tileType == 0 means no tile there
-	GROUND
-	SPIKE
+	EMPTY   	= TileType(0) // tileMap[i].tileType == 0 means no tile there
+	GROUND          = TileType(SOLID)
+	SPIKE           = TileType(SOLID | KILLS_ON_CONTACT)
 	TILE_WIDTH      = 6
 	TILE_MAP_WIDTH  = 80 // tiles
 	TILE_MAP_HEIGHT = 45 // tiles
 	TILE_COUNT      = TILE_MAP_WIDTH * TILE_MAP_HEIGHT
 )
 
-type tilePropertyFlag uint32
-
-const (
-	SOLID              tilePropertyFlag = 1 << iota // = 1
-	KILLS_ON_CONTACT                                // = 2
-	SOMETHING_ELSE_IDK                              // = 4, etc
+const ( // possible flags, combined to create new tile types
+	SOLID              uint32 = 1 << iota // = 1
+	KILLS_ON_CONTACT                      // = 2
+	SOMETHING_ELSE_IDK                    // = 4, etc
+	TEST               = SOLID & KILLS_ON_CONTACT
 )
 
 type TileMap struct {
-	image      [TILE_COUNT]*ebiten.Image
-	tileType   [TILE_COUNT]TileType
-	properties [TILE_COUNT]tilePropertyFlag
+	image    [TILE_COUNT]*ebiten.Image
+	tileType [TILE_COUNT]TileType
+}
+
+// TODO: implement this
+func (g *Game) getTileImage(t TileType) *ebiten.Image {
+	switch t {
+	case EMPTY:
+		return nil
+	case GROUND:
+		return g.tileImage
+	case SPIKE:
+		return g.tileImageSpike
+	default:
+		return nil
+	}
 }
 
 // TODO: prolly change this
-func (t *TileMap) set(x, y int, image *ebiten.Image, tileType TileType, properties tilePropertyFlag) {
+func (t *TileMap) set(x, y int, image *ebiten.Image, tileType TileType) {
 	ind := y*TILE_MAP_WIDTH + x
 	t.image[ind] = image
 	t.tileType[ind] = tileType
-	t.properties[ind] = properties
 }
 
 func (t *TileMap) Draw(screen *ebiten.Image) {
@@ -223,7 +234,7 @@ func (e *Entity) Move(x, y float64, tileMap *TileMap, stopCompletelyOnCollision 
 			}
 			for i := e.x; i < e.x+e.width; i++ {
 				tileX := i / TILE_WIDTH
-				if tileMap.properties[TILE_MAP_WIDTH*tileY+tileX]&SOLID == SOLID { // colliding
+				if uint32(tileMap.tileType[TILE_MAP_WIDTH*tileY+tileX])&SOLID == SOLID { // colliding
 					indY = TILE_MAP_WIDTH*tileY + tileX
 					if stopCompletelyOnCollision {
 						return
@@ -248,7 +259,7 @@ func (e *Entity) Move(x, y float64, tileMap *TileMap, stopCompletelyOnCollision 
 			}
 			for i := e.y; i < e.y+e.height; i++ {
 				tileY := i / TILE_WIDTH
-				if tileMap.properties[TILE_MAP_WIDTH*tileY+tileX]&SOLID == SOLID {
+				if uint32(tileMap.tileType[TILE_MAP_WIDTH*tileY+tileX])&SOLID == SOLID { // colliding
 					indX = TILE_MAP_WIDTH*tileY + tileX
 					if stopCompletelyOnCollision {
 						return
@@ -276,8 +287,9 @@ type Game struct {
 
 	a1, b1, a2, b2 float64
 
-	tileMap   *TileMap
-	tileImage *ebiten.Image // TEMPORARY
+	tileMap        *TileMap
+	tileImage      *ebiten.Image // TEMPORARY
+	tileImageSpike *ebiten.Image // TEMPORARY
 }
 
 func (g *Game) drawLineEquation(a, b float64, screen *ebiten.Image) {
@@ -420,14 +432,14 @@ func (g *Game) Update() error {
 		indX, indY := g.player.e.Move(g.player.vx, g.player.vy, g.tileMap, false)
 		{
 			if indX != -1 { // handle X direction collision
-				if g.tileMap.properties[indX]&SOLID == SOLID {
+				if uint32(g.tileMap.tileType[indX])&SOLID == SOLID {
 					g.player.inHook = false
 					g.player.vx = 0
 					g.player.e.remX = 0.0
 				}
 			}
 			if indY != -1 { // handle Y direction collision
-				if g.tileMap.properties[indY]&SOLID == SOLID {
+				if uint32(g.tileMap.tileType[indY])&SOLID == SOLID {
 					g.player.inHook = false
 					g.player.e.remY = 0
 					// hacky? Move() doesn't say whether the Y collision happened going up or down
@@ -485,6 +497,10 @@ func (g *Game) Update() error {
 		} else {
 			g.player.framesSinceGrounded++
 		}
+
+		g.player.movingLeft = false
+		g.player.movingRight = false
+		g.player.enteringHook = false
 	}
 
 	if !g.player.inHook || g.player.enteringHook { // update circle
@@ -525,9 +541,29 @@ func (g *Game) Update() error {
 		g.circle.Update()
 
 	}
-	g.player.movingLeft = false
-	g.player.movingRight = false
-	g.player.enteringHook = false
+
+	{ // "level editor"
+		placingBlock := false
+		selectedTileType := EMPTY
+		switch {
+		case ebiten.IsKeyPressed(ebiten.Key0):
+			selectedTileType = EMPTY
+			placingBlock = true
+		case ebiten.IsKeyPressed(ebiten.Key1):
+			selectedTileType = GROUND
+			placingBlock = true
+		case ebiten.IsKeyPressed(ebiten.Key2):
+			selectedTileType = SPIKE
+			placingBlock = true
+		}
+		if placingBlock {
+			x, y := ebiten.CursorPosition()
+			tileX, tileY := x/6, y/6
+			ind := tileY*TILE_MAP_WIDTH + tileX
+			g.tileMap.image[ind] = g.getTileImage(selectedTileType)
+			g.tileMap.tileType[ind] = selectedTileType
+		}
+	}
 	return nil
 }
 
@@ -567,27 +603,31 @@ func (g *Game) Init() {
 	g.indicatorCircle = &Circle{x: 0.0, y: 0.0, r: 8.0, clr: color.RGBA{180, 0, 0, 255},
 		pixels: ebiten.NewImage(Round(MAX_HOOK_RADIUS*2.0), Round(MAX_HOOK_RADIUS*2.0)), translationMatrix: &ebiten.DrawImageOptions{}}
 
-	g.tileMap = &TileMap{}
-	g.tileImage = ebiten.NewImage(TILE_WIDTH, TILE_WIDTH)
-	g.tileImage.Fill(color.RGBA{120, 120, 120, 255})
-	for i := 0; i < TILE_MAP_WIDTH; i++ {
-		g.tileMap.set(i, TILE_MAP_HEIGHT-1, g.tileImage, GROUND, SOLID)
-		g.tileMap.set(i, 0, g.tileImage, GROUND, SOLID)
+	{ // "level design" lol
+		g.tileMap = &TileMap{}
+		g.tileImage = ebiten.NewImage(TILE_WIDTH, TILE_WIDTH)
+		g.tileImage.Fill(color.RGBA{120, 120, 120, 255})
+		g.tileImageSpike = ebiten.NewImage(TILE_WIDTH, TILE_WIDTH)
+		g.tileImageSpike.Fill(color.RGBA{255, 50, 50, 255})
+		for i := 0; i < TILE_MAP_WIDTH; i++ {
+			g.tileMap.set(i, TILE_MAP_HEIGHT-1, g.tileImage, GROUND)
+			g.tileMap.set(i, 0, g.tileImage, GROUND)
+		}
+		for i := 0; i < TILE_MAP_HEIGHT; i++ {
+			g.tileMap.set(0, i, g.tileImage, GROUND)
+			g.tileMap.set(TILE_MAP_WIDTH-1, i, g.tileImage, GROUND)
+		}
+		for i := 0; i < TILE_MAP_WIDTH/2; i++ {
+			g.tileMap.set(i, 30, g.tileImage, GROUND)
+		}
+		g.tileMap.set(0, 0, g.tileImage, GROUND)
+		g.tileMap.set(3, 0, g.tileImage, GROUND)
+		g.tileMap.set(3, 33, g.tileImage, GROUND)
+		g.tileMap.set(10, 30, g.tileImage, GROUND)
+		g.tileMap.set(11, 30, g.tileImage, GROUND)
+		g.tileMap.set(12, 30, g.tileImage, GROUND)
+		g.tileMap.set(13, 30, g.tileImage, GROUND)
 	}
-	for i := 0; i < TILE_MAP_HEIGHT; i++ {
-		g.tileMap.set(0, i, g.tileImage, GROUND, SOLID)
-		g.tileMap.set(TILE_MAP_WIDTH-1, i, g.tileImage, GROUND, SOLID)
-	}
-	for i := 0; i < TILE_MAP_WIDTH/2; i++ {
-		g.tileMap.set(i, 30, g.tileImage, GROUND, SOLID)
-	}
-	g.tileMap.set(0, 0, g.tileImage, GROUND, SOLID)
-	g.tileMap.set(3, 0, g.tileImage, GROUND, SOLID)
-	g.tileMap.set(3, 33, g.tileImage, GROUND, SOLID)
-	g.tileMap.set(10, 30, g.tileImage, GROUND, SOLID)
-	g.tileMap.set(11, 30, g.tileImage, GROUND, SOLID)
-	g.tileMap.set(12, 30, g.tileImage, GROUND, SOLID)
-	g.tileMap.set(13, 30, g.tileImage, GROUND, SOLID)
 }
 
 func main() {
