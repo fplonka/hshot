@@ -9,8 +9,6 @@ package main
 // setup git
 // lock hook to center of tile
 // movement:
-//	-adjust jump: switch onKeyJustPressed and add a small buffer for when almost touching the ground
-//	-adjust hook analogously
 //	-hook settings: snapping to nearest 30/45 deg? setting hook points with click and using with space or using in current pos with just mouse?
 //	-make colliding while inHook force hook exit (PROPERLY)
 import (
