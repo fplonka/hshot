@@ -11,6 +11,8 @@ package main
 //	-hook settings: snapping to nearest 30/45 deg? setting hook points with click and using with space or using in current pos with just mouse?
 // split functionality of move into move and checkCollision
 // is Move() return-instantly-on-collision bool flag parameter really necessary? couldn't it just basically be always true and not make a difference because of the special Move() loop structure?
+// read write level data from file!!
+// center camera around player??
 
 import (
 	"fmt"
@@ -95,12 +97,11 @@ func (t *TileMap) set(x, y int, image *ebiten.Image, tileType TileType) {
 	t.tileType[ind] = tileType
 }
 
-func (t *TileMap) Draw(screen *ebiten.Image) {
-	options := &ebiten.DrawImageOptions{}
+func (t *TileMap) Draw(screen *ebiten.Image, options ebiten.DrawImageOptions) {
 	for i := 0; i < TILE_MAP_HEIGHT; i++ {
 		for j := 0; j < TILE_MAP_WIDTH; j++ {
 			if t.tileType[i*TILE_MAP_WIDTH+j] != EMPTY {
-				screen.DrawImage(t.image[i*TILE_MAP_WIDTH+j], options)
+				screen.DrawImage(t.image[i*TILE_MAP_WIDTH+j], &options)
 			}
 			options.GeoM.Translate(float64(TILE_WIDTH), 0.0)
 		}
@@ -180,13 +181,15 @@ type Entity struct {
 	height, width int
 }
 
-func (player *Player) Draw(screen *ebiten.Image) {
-	player.imageOptions.GeoM = ebiten.GeoM{}
-	player.imageOptions.GeoM.Translate(float64(player.e.x), float64(player.e.y))
+func (player *Player) Draw(screen *ebiten.Image, options ebiten.DrawImageOptions) {
+	// return float64(g.width)/2.0 - float64(g.player.e.x) - float64(g.player.e.width)/2.0,
+	// 	float64(g.height)/2.0 - float64(g.player.e.y) - float64(g.player.e.height)/2.0
+
+	options.GeoM.Translate(float64(player.e.x), float64(player.e.y))
 	if player.inHook {
-		screen.DrawImage(player.spriteInHook, player.imageOptions)
+		screen.DrawImage(player.spriteInHook, &options)
 	} else {
-		screen.DrawImage(player.sprite, player.imageOptions)
+		screen.DrawImage(player.sprite, &options)
 	}
 }
 
@@ -333,6 +336,8 @@ type Game struct {
 	tileMap        *TileMap
 	tileImage      *ebiten.Image // TEMPORARY
 	tileImageSpike *ebiten.Image // TEMPORARY
+
+	view *ebiten.Image
 }
 
 func (g *Game) drawLineEquation(a, b float64, screen *ebiten.Image) {
@@ -348,6 +353,13 @@ func (g *Game) drawLineEquation(a, b float64, screen *ebiten.Image) {
 	clr := color.RGBA{80, 80, 80, 255}
 	ebitenutil.DrawLine(screen, x1, y1, x2, y2, clr)
 
+}
+
+// bad name
+func (g *Game) getDrawTranslate() (dx, dy float64) {
+	// return float64(g.width)/2.0 - float64(g.player.e.x) - float64(g.player.e.width)/2.0,
+	// 	float64(g.height)/2.0 - float64(g.player.e.y) - float64(g.player.e.height)/2.0
+	return float64(g.width)/2.0 - float64(g.player.e.x) - float64(g.player.e.width)/2.0, 0
 }
 
 func (g *Game) Update() error {
@@ -398,35 +410,33 @@ func (g *Game) Update() error {
 		}
 
 		{ // enter hook
-			if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+			if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
 				g.player.framesSinceHookEnterAttempt = 0
 			} else {
 				g.player.framesSinceHookEnterAttempt++
 			}
 			lx := playerCenterX - g.circle.x
 			ly := playerCenterY - g.circle.y
-			if !g.player.inHook && g.player.framesSinceHookEnterAttempt < BUFFER_FRAME_COUNT &&
+			if g.player.framesSinceHookEnterAttempt < BUFFER_FRAME_COUNT &&
 				math.Sqrt(lx*lx+ly*ly) <= MAX_HOOK_RADIUS {
 				g.player.enteringHook = true
 				g.player.framesSinceHookEnterAttempt = BUFFER_FRAME_COUNT + 1
-				g.player.vx *= HOOK_SPEEDUP_COEFF
-				g.player.vy *= HOOK_SPEEDUP_COEFF
 				if g.player.vx > 0 {
 					g.player.vx += math.Sqrt(g.player.vx+1) * HOOK_SPEEDUP_COEFF
 				} else {
-					g.player.vx -= math.Sqrt(math.Abs(g.player.vx)+1) * HOOK_SPEEDUP_COEFF
+					g.player.vx -= math.Sqrt(math.Abs(g.player.vx)+0.5) * HOOK_SPEEDUP_COEFF
 				}
 				if g.player.vy > 0 {
 					g.player.vy += math.Sqrt(g.player.vy+1) * HOOK_SPEEDUP_COEFF
 				} else {
-					g.player.vy -= math.Sqrt(math.Abs(g.player.vy)+1) * HOOK_SPEEDUP_COEFF
+					g.player.vy -= math.Sqrt(math.Abs(g.player.vy)+0.5) * HOOK_SPEEDUP_COEFF
 				}
 
 				g.player.inHook = true
 				g.circle.clr = color.RGBA{255, 255, 255, 255}
 			}
 		}
-		if g.player.inHook && inpututil.IsKeyJustReleased(ebiten.KeySpace) {
+		if g.player.inHook && inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonLeft) {
 			g.player.inHook = false
 			// potential exit velocity multiplier here?
 		}
@@ -531,46 +541,48 @@ func (g *Game) Update() error {
 
 		g.player.movingLeft = false
 		g.player.movingRight = false
-		g.player.enteringHook = false
 	}
 
-	if !g.player.inHook || g.player.enteringHook { // update circle
+	{ // AAA
 		playerCenterX := float64(g.player.e.x) + float64(g.player.e.width)/2.0
 		playerCenterY := float64(g.player.e.y) + float64(g.player.e.height)/2.0
-		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
-			x, y := ebiten.CursorPosition()
-			x1, y1 := float64(x), float64(y)
-			dx := (x1 - playerCenterX)
-			dy := (y1 - playerCenterY)
-			collisionFinder := &Entity{x: int(math.Round(playerCenterX)), y: int(math.Round(playerCenterY)),
-				remX: 0.0, remY: 0.0, width: 1, height: 1}
-			dir := collisionFinder.Move(1000*dx, 1000*dy, g.tileMap, true)
+		x, y := ebiten.CursorPosition()
+		tx, ty := g.getDrawTranslate()
+		x1, y1 := float64(x), float64(y)
+		x1 -= tx
+		y1 -= ty
+		dx := (x1 - playerCenterX)
+		dy := (y1 - playerCenterY)
+		collisionFinder := &Entity{x: int(math.Round(playerCenterX)), y: int(math.Round(playerCenterY)),
+			remX: 0.0, remY: 0.0, width: 1, height: 1}
+		dir := collisionFinder.Move(1000*dx, 1000*dy, g.tileMap, true)
 
-			if dir == UP {
-				g.circle.x = float64(collisionFinder.x)
-				// -1 to make it inside the ceiling and not just right under
-				g.circle.y = float64(collisionFinder.y - 1)
-				g.indicatorCircle.x = g.circle.x
-				g.indicatorCircle.y = g.circle.y
-				g.indicatorCircle.Update()
+		if dir == UP && !g.player.inHook {
+			g.circle.x = float64(collisionFinder.x)
+			// -1 to make it inside the ceiling and not just right under
+			g.circle.y = float64(collisionFinder.y - 1)
+			g.indicatorCircle.x = g.circle.x
+			g.indicatorCircle.y = g.circle.y
+			g.indicatorCircle.Update()
+		}
+		if !g.player.inHook || g.player.enteringHook { // update circle
+			lx := g.circle.x - playerCenterX
+			ly := g.circle.y - playerCenterY
+			g.circle.r = math.Sqrt(lx*lx + ly*ly)
+			// c := math.Min(math.Max((1.0/15.0)*(MAX_HOOK_RADIUS-g.circle.r), 0.0), 0.7)
+			if g.circle.r > MAX_HOOK_RADIUS {
+				g.circle.r = MAX_HOOK_RADIUS
 			}
-
+			// v := uint8(255 * c)
+			// g.circle.clr = color.RGBA{v, v, v, 255}
+			// g.circle.clr = color.RGBA{50, 50, 50, 255}
+			g.circle.clr = color.RGBA{0, 0, 0, 255}
+			if g.player.enteringHook {
+				g.circle.clr = color.RGBA{255, 255, 255, 255}
+			}
+			g.circle.Update()
+			g.player.enteringHook = false
 		}
-
-		lx := g.circle.x - playerCenterX
-		ly := g.circle.y - playerCenterY
-		g.circle.r = math.Sqrt(lx*lx + ly*ly)
-		c := math.Min(math.Max((1.0/15.0)*(MAX_HOOK_RADIUS-g.circle.r), 0.0), 0.7)
-		if g.circle.r > MAX_HOOK_RADIUS {
-			g.circle.r = MAX_HOOK_RADIUS
-		}
-		v := uint8(255 * c)
-		g.circle.clr = color.RGBA{v, v, v, 255}
-		if g.player.enteringHook {
-			g.circle.clr = color.RGBA{255, 255, 255, 255}
-		}
-		g.circle.Update()
-
 	}
 
 	{ // "level editor"
@@ -589,6 +601,9 @@ func (g *Game) Update() error {
 		}
 		if placingBlock {
 			x, y := ebiten.CursorPosition()
+			dx, dy := g.getDrawTranslate()
+			x -= int(dx)
+			y -= int(dy)
 			tileX, tileY := x/6, y/6
 			ind := tileY*TILE_MAP_WIDTH + tileX
 			g.tileMap.image[ind] = g.getTileImage(selectedTileType)
@@ -599,13 +614,23 @@ func (g *Game) Update() error {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	screen.DrawImage(g.circle.pixels, g.circle.translationMatrix)
-	screen.DrawImage(g.indicatorCircle.pixels, g.indicatorCircle.translationMatrix)
+	dx, dy := g.getDrawTranslate()
 
-	g.tileMap.Draw(screen)
-	g.player.Draw(screen)
+	circleOpt := *g.circle.translationMatrix
+	circleOpt.GeoM.Translate(dx, dy)
+	screen.DrawImage(g.circle.pixels, &circleOpt)
 
-	ebitenutil.DebugPrint(screen, fmt.Sprintf("%v\n%04v %04v\n %.4f %.4f\n%v", ebiten.CurrentFPS(), g.player.e.x, g.player.e.y, g.player.vx, g.player.vy, g.player.grounded))
+	indicatorCircleOpt := *g.indicatorCircle.translationMatrix
+	indicatorCircleOpt.GeoM.Translate(dx, dy)
+	screen.DrawImage(g.indicatorCircle.pixels, &indicatorCircleOpt)
+
+	opt := &ebiten.DrawImageOptions{}
+	opt.GeoM.Translate(dx, dy)
+
+	g.tileMap.Draw(screen, *opt)
+	g.player.Draw(screen, *opt)
+
+	ebitenutil.DebugPrint(screen, fmt.Sprintf("%v\n%04v %04v\n %.4f %.4f\n%v\n%v\n", ebiten.CurrentFPS(), g.player.e.x, g.player.e.y, g.player.vx, g.player.vy, g.player.grounded, g.player.inHook))
 	// fmt.Printf("   x: %04v,    y: %04v\n", g.player.e.x, g.player.e.y)
 	// fmt.Printf("remX: %.2f, remY: %.2f\n\n", g.player.e.remX, g.player.e.remY)
 
@@ -635,6 +660,7 @@ func (g *Game) Init() {
 		pixels: ebiten.NewImage(Round(MAX_HOOK_RADIUS*2.0), Round(MAX_HOOK_RADIUS*2.0)), translationMatrix: &ebiten.DrawImageOptions{}}
 	g.indicatorCircle = &Circle{x: 0.0, y: 0.0, r: 8.0, clr: color.RGBA{180, 0, 0, 255},
 		pixels: ebiten.NewImage(Round(MAX_HOOK_RADIUS*2.0), Round(MAX_HOOK_RADIUS*2.0)), translationMatrix: &ebiten.DrawImageOptions{}}
+	g.view = ebiten.NewImage(g.width, g.height)
 
 	{ // "level design" lol
 		g.tileMap = &TileMap{}
@@ -651,7 +677,7 @@ func (g *Game) Init() {
 			g.tileMap.set(TILE_MAP_WIDTH-1, i, g.tileImage, GROUND)
 		}
 		for i := 0; i < TILE_MAP_WIDTH/2; i++ {
-			g.tileMap.set(i, 30, g.tileImage, GROUND)
+			g.tileMap.set(i, 28, g.tileImage, GROUND)
 		}
 		g.tileMap.set(0, 0, g.tileImage, GROUND)
 		g.tileMap.set(3, 0, g.tileImage, GROUND)
@@ -667,7 +693,7 @@ func main() {
 	ebiten.SetWindowSize(ebiten.ScreenSizeInFullscreen())
 	ebiten.SetWindowTitle("Polygons (Ebiten Demo)")
 	// ebiten.SetMaxTPS(ebiten.UncappedTPS)
-	// ebiten.SetVsyncEnabled(false)
+	ebiten.SetVsyncEnabled(false)
 	g := &Game{}
 	g.Init()
 	if err := ebiten.RunGame(g); err != nil {
