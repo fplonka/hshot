@@ -14,6 +14,9 @@ package main
 // read write level data from file!!
 // center camera around player??
 
+// jumping currently kinda BROKEN
+// seperate time since jump attempt and time spent pressing jump button to extend jump
+
 import (
 	"fmt"
 	"image/color"
@@ -49,7 +52,7 @@ const (
 	HOOK_SPEEDUP_COEFF  = 1.0
 	HOOK_FRICTION_COEFF = 0.01
 
-	BUFFER_FRAME_COUNT = 5
+	BUFFER_FRAME_COUNT = 10
 )
 
 // currently: pixel grid is 480x270, tile grid is 80x45 (6 logical pixels per tile)
@@ -60,8 +63,8 @@ const (
 	GROUND          = TileType(SOLID)
 	SPIKE           = TileType(SOLID | KILLS_ON_CONTACT)
 	TILE_WIDTH      = 6
-	TILE_MAP_WIDTH  = 80 // tiles
-	TILE_MAP_HEIGHT = 45 // tiles
+	TILE_MAP_WIDTH  = 80 * 4 // tiles
+	TILE_MAP_HEIGHT = 45 * 4 // tiles
 	TILE_COUNT      = TILE_MAP_WIDTH * TILE_MAP_HEIGHT
 )
 
@@ -200,7 +203,6 @@ func (player *Player) Draw(screen *ebiten.Image, options ebiten.DrawImageOptions
 type Direction uint8
 
 const (
-	// TODO: remove all but one iota
 	UP Direction = 1 << iota
 	RIGHT
 	DOWN
@@ -357,9 +359,9 @@ func (g *Game) drawLineEquation(a, b float64, screen *ebiten.Image) {
 
 // bad name
 func (g *Game) getDrawTranslate() (dx, dy float64) {
-	// return float64(g.width)/2.0 - float64(g.player.e.x) - float64(g.player.e.width)/2.0,
-	// 	float64(g.height)/2.0 - float64(g.player.e.y) - float64(g.player.e.height)/2.0
-	return float64(g.width)/2.0 - float64(g.player.e.x) - float64(g.player.e.width)/2.0, 0
+	return float64(g.width)/2.0 - float64(g.player.e.x) - float64(g.player.e.width)/2.0,
+		float64(g.height)/2.0 - float64(g.player.e.y) - float64(g.player.e.height)/2.0
+	// return float64(g.width)/2.0 - float64(g.player.e.x) - float64(g.player.e.width)/2.0, 0
 }
 
 func (g *Game) Update() error {
@@ -392,9 +394,12 @@ func (g *Game) Update() error {
 		} else {
 			g.player.framesSinceJumpAttempt++
 		}
-		if g.player.grounded && g.player.framesSinceJumpAttempt < BUFFER_FRAME_COUNT {
+		if g.player.framesSinceJumpAttempt < BUFFER_FRAME_COUNT && g.player.framesSinceGrounded < BUFFER_FRAME_COUNT {
 			g.player.grounded = false
+			g.player.framesSinceGrounded = 0
 			g.player.vy -= JUMP_INSTANT_ACCELL
+			fmt.Println(g.player.framesSinceJumpAttempt)
+			g.player.framesSinceJumpAttempt = BUFFER_FRAME_COUNT + 1
 		}
 		if !ebiten.IsKeyPressed(ebiten.KeyW) {
 			g.player.framesSinceGrounded = JUMP_ACCELL_FRAME_COUNT + JUMP_ACCELL_FRAME_START + 1
@@ -403,6 +408,7 @@ func (g *Game) Update() error {
 		// gravity
 		if !g.player.grounded {
 			g.player.vy += GRAV_ACCELL
+			// g.player.framesSinceGrounded = JUMP_ACCELL_FRAME_COUNT + JUMP_ACCELL_FRAME_START + 1
 		}
 		if g.player.framesSinceGrounded < (JUMP_ACCELL_FRAME_COUNT+JUMP_ACCELL_FRAME_START) && g.player.framesSinceGrounded >= JUMP_ACCELL_FRAME_START {
 			g.player.vy -= (TOTAL_EXTRA_JUMP_DELTA_VY / JUMP_ACCELL_FRAME_COUNT)
@@ -630,7 +636,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	g.tileMap.Draw(screen, *opt)
 	g.player.Draw(screen, *opt)
 
-	ebitenutil.DebugPrint(screen, fmt.Sprintf("%v\n%04v %04v\n %.4f %.4f\n%v\n%v\n", ebiten.CurrentFPS(), g.player.e.x, g.player.e.y, g.player.vx, g.player.vy, g.player.grounded, g.player.inHook))
+	ebitenutil.DebugPrint(screen, fmt.Sprintf("%v\n%04v %04v\n %.4f %.4f\n%v\n%v\n%v\n", ebiten.CurrentFPS(), g.player.e.x, g.player.e.y, g.player.vx, g.player.vy, g.player.grounded, g.player.framesSinceJumpAttempt, g.player.framesSinceGrounded))
 	// fmt.Printf("   x: %04v,    y: %04v\n", g.player.e.x, g.player.e.y)
 	// fmt.Printf("remX: %.2f, remY: %.2f\n\n", g.player.e.remX, g.player.e.remY)
 
@@ -666,6 +672,10 @@ func (g *Game) Init() {
 		g.tileMap = &TileMap{}
 		g.tileImage = ebiten.NewImage(TILE_WIDTH, TILE_WIDTH)
 		g.tileImage.Fill(color.RGBA{120, 120, 120, 255})
+		g.tileImage.Set(0, 0, color.RGBA{50, 255, 50, 255})
+		g.tileImage.Set(0, TILE_WIDTH-1, color.RGBA{50, 255, 50, 255})
+		g.tileImage.Set(TILE_WIDTH-1, TILE_WIDTH-1, color.RGBA{50, 255, 50, 255})
+		g.tileImage.Set(TILE_WIDTH-1, 0, color.RGBA{50, 255, 50, 255})
 		g.tileImageSpike = ebiten.NewImage(TILE_WIDTH, TILE_WIDTH)
 		g.tileImageSpike.Fill(color.RGBA{255, 50, 50, 255})
 		for i := 0; i < TILE_MAP_WIDTH; i++ {
@@ -677,7 +687,7 @@ func (g *Game) Init() {
 			g.tileMap.set(TILE_MAP_WIDTH-1, i, g.tileImage, GROUND)
 		}
 		for i := 0; i < TILE_MAP_WIDTH/2; i++ {
-			g.tileMap.set(i, 28, g.tileImage, GROUND)
+			g.tileMap.set(i, 16, g.tileImage, GROUND)
 		}
 		g.tileMap.set(0, 0, g.tileImage, GROUND)
 		g.tileMap.set(3, 0, g.tileImage, GROUND)
@@ -693,7 +703,7 @@ func main() {
 	ebiten.SetWindowSize(ebiten.ScreenSizeInFullscreen())
 	ebiten.SetWindowTitle("Polygons (Ebiten Demo)")
 	// ebiten.SetMaxTPS(ebiten.UncappedTPS)
-	ebiten.SetVsyncEnabled(false)
+	// ebiten.SetVsyncEnabled(false)
 	g := &Game{}
 	g.Init()
 	if err := ebiten.RunGame(g); err != nil {
